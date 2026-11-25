@@ -10,7 +10,8 @@
 //
 // Versions before the one that removed it could protect the data key with a
 // master password. Such a file is opened once with ConvertLegacy and is an
-// ordinary vault from then on.
+// ordinary vault from then on. The current version can protect the data key
+// with an application password instead; see password.go.
 package vault
 
 import (
@@ -310,7 +311,7 @@ func (vault *Vault) ConvertLegacy(password string) error {
 		}
 		return err
 	}
-	if err := vault.write(vault.file.Records); err != nil {
+	if err := vault.writeWithProtection(vault.file.Records, nil, nil); err != nil {
 		_ = vault.keys.Delete(KeyService, KeyAccount)
 		clear(key)
 		return err
@@ -672,11 +673,13 @@ func (vault *Vault) Names() ([]string, error) {
 
 // Clear forgets every saved secret and the data key: the next secret saved starts
 // a vault of its own. It is the way out of ErrKeyLost, and of a master password
-// from an earlier version that was forgotten.
+// from an earlier version that was forgotten. It also drops any application
+// password protection (the KDF and wrapped key), so a forgotten application
+// password can be escaped this way too.
 func (vault *Vault) Clear() error {
 	vault.mu.Lock()
 	defer vault.mu.Unlock()
-	if err := vault.write(nil); err != nil {
+	if err := vault.writeWithProtection(nil, nil, nil); err != nil {
 		return err
 	}
 	clear(vault.key)
@@ -688,8 +691,19 @@ func (vault *Vault) Clear() error {
 }
 
 // write saves a new state of the file, atomically, and adopts it on success.
+// It keeps whatever password protection the file already has, so a write after
+// unlocking never silently strips the application password. Callers that mean
+// to change the protection use writeWithProtection.
 func (vault *Vault) write(records []record) error {
-	file := fileData{Version: fileVersion, Records: records}
+	return vault.writeWithProtection(records, vault.file.KDF, vault.file.WrappedKey)
+}
+
+// writeWithProtection saves a new state of the file with the given password
+// protection: a nil kdf and wrapped key mean no protection. It is the only
+// write path that may change the protection, and it adopts the new state only
+// once the file is on disk.
+func (vault *Vault) writeWithProtection(records []record, kdf *kdfParams, wrapped []byte) error {
+	file := fileData{Version: fileVersion, KDF: kdf, WrappedKey: wrapped, Records: records}
 	if file.Records == nil {
 		file.Records = []record{}
 	}

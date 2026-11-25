@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/vivaui/viva/app"
 	"github.com/vivaui/viva/app/systemauth"
@@ -17,6 +18,11 @@ import (
 )
 
 var errAppLocked = errors.New("Motty is locked")
+
+// errAppLockVaultProtected refuses a system-unlock enrollment: the vault
+// is protected with a password other than the application lock password,
+// so a system unlock could never open it.
+var errAppLockVaultProtected = errors.New("the vault is protected with a different password, so system unlock cannot open it")
 
 type appLockAction uint8
 
@@ -233,6 +239,15 @@ func (s *State) runAppLockAction(action appLockAction, current, next string, don
 		done(p.openErr)
 		return
 	}
+	if action == appLockEnroll {
+		// The enrollment form already collected the current password;
+		// a vault another password protects refuses enrollment here,
+		// before any system prompt, so the reason is the one reported.
+		if err := s.checkVaultForEnroll(current); err != nil {
+			done(err)
+			return
+		}
+	}
 	unlock := action == appLockUnlock || action == appLockSystemUnlock
 	if unlock != s.appLocked() || (action == appLockEnable) == s.appLockEnabled() {
 		done(errAppLocked)
@@ -268,6 +283,22 @@ func (s *State) runAppLockAction(action appLockAction, current, next string, don
 				} else if action == appLockEnable && (generation != p.generation || len(windows) == 0) {
 					s.sealProfile()
 				}
+				// The vault linkage runs here, on the window thread, with
+				// the passwords still in hand. It never re-locks the
+				// application: a vault failure only leaves a notice.
+				s.syncVaultAfterAppLock(action, current, next)
+				// System unlock never checks a password, so perform
+				// leaves the failure history alone; a successful one
+				// still clears it, like a successful password unlock.
+				if action == appLockSystemUnlock && (updated.FailedAttempts != 0 || updated.LockCount != 0 || updated.LockedUntilUnix != 0) {
+					updated.FailedAttempts, updated.LockCount, updated.LockedUntilUnix = 0, 0, 0
+					p.record = updated
+					if err := updated.save(path); err != nil {
+						log.Printf("motty: clear application lock failures after system unlock: %v", err)
+					}
+				}
+				s.noteActivity()
+				s.armIdleLockWake()
 			}
 			if !s.closed {
 				done(err)
@@ -296,11 +327,44 @@ func (s *State) runAppLockAction(action appLockAction, current, next string, don
 
 func (system appLockSystem) perform(ctx context.Context, record lockVerifier, path string, action appLockAction, current, next, reason string) (lockVerifier, error) {
 	service := keyService(appLockSystemService)
+	// A lockout refuses every password check without verifying, so a
+	// rejected attempt says nothing about the password, extends nothing
+	// and counts nothing. An expired lockout starts fresh attempts but
+	// keeps LockCount, so the next lockout is the longer one. System
+	// unlock and revoke never check a password and are not gated.
+	clearedFailures := false
+	if record.LockedUntilUnix != 0 {
+		switch action {
+		case appLockChange, appLockDisable, appLockEnroll, appLockUnlock:
+			if record.lockoutRemaining(time.Now()) > 0 {
+				return record, errAppLockLockedOut
+			}
+			record.FailedAttempts, record.LockedUntilUnix = 0, 0
+			clearedFailures = true
+		}
+	}
 	switch action {
 	case appLockChange, appLockDisable, appLockEnroll, appLockUnlock:
 		if err := record.verify(current); err != nil {
+			if errors.Is(err, errLockWrongPassword) {
+				updated := record
+				updated.FailedAttempts++
+				if updated.FailedAttempts >= lockoutThreshold {
+					updated.LockCount++
+					updated.LockedUntilUnix = time.Now().Add(lockoutDurationFor(updated.LockCount)).Unix()
+				}
+				if saveErr := updated.save(path); saveErr != nil {
+					log.Printf("motty: save application lock after a wrong password: %v", saveErr)
+				}
+				return updated, err
+			}
 			return record, err
 		}
+		// A correct password clears the failure history.
+		if record.FailedAttempts != 0 || record.LockCount != 0 || record.LockedUntilUnix != 0 {
+			clearedFailures = true
+		}
+		record.FailedAttempts, record.LockCount, record.LockedUntilUnix = 0, 0, 0
 	}
 	if err := ctx.Err(); err != nil {
 		return record, err
@@ -367,6 +431,14 @@ func (system appLockSystem) perform(ctx context.Context, record lockVerifier, pa
 		}
 		return record, system.verify(ctx, reason)
 	case appLockUnlock:
+		// A success that cleared failure history must reach the file, or
+		// a restart would read the stale counts back. A save failure
+		// here does not fail the unlock itself: the password was right.
+		if clearedFailures {
+			if err := record.save(path); err != nil {
+				log.Printf("motty: save application lock after a successful unlock: %v", err)
+			}
+		}
 		return record, nil
 	}
 	return record, errAppLocked

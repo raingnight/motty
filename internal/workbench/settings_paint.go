@@ -20,7 +20,7 @@ const (
 	// cut: a long font family must not push the row's own name out of the card.
 	settingsValueMax = float32(180)
 	// settingsChoiceMax is the largest number of options a choice row offers.
-	settingsChoiceMax = 4
+	settingsChoiceMax = 5
 )
 
 // settingsControlKind is how a recorded control is painted.

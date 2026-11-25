@@ -25,6 +25,11 @@ type sectionBodies struct {
 	sessionLogs      sessionLogsSectionUI
 	workspaceLibrary workspaceLibrarySectionUI
 	dashboard        dashboardSectionUI
+	servers          serversSectionUI
+	serversHome      serversHomeSectionUI
+	serverAlerts     serverAlertsSectionUI
+	serversBatch     serversBatchSectionUI
+	serversSFTP      serversSFTPSectionUI
 }
 
 // catalogSectionBounds is the room the workspace slot gives a catalog section:
@@ -51,6 +56,16 @@ func (state *State) declareCatalogSection(c ui.C) {
 		state.declareProxiesWorkspace(c)
 	case sectionKnownHosts:
 		state.declareKnownHostsWorkspace(c)
+	case sectionServers:
+		state.declareServersWorkspace(c)
+	case sectionServersHome:
+		state.declareServersHomeWorkspace(c)
+	case sectionServerAlerts:
+		state.declareServerAlertsWorkspace(c)
+	case sectionServersBatch:
+		state.declareServersBatchWorkspace(c)
+	case sectionServersSFTP:
+		state.declareServersSFTPWorkspace(c)
 	case sectionSnippets:
 		state.declareSnippetsWorkspace(c)
 	case sectionSessionLogs:

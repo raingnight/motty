@@ -119,6 +119,11 @@ type Messages struct {
 
 	// Navigation.
 	NavHosts                  string
+	NavServers                string
+	NavServersHome            string
+	NavServerAlerts           string
+	NavServersBatch           string
+	NavServersSFTP            string
 	NavWorkspaces             string
 	NavKeychain               string
 	NavProxies                string
@@ -257,6 +262,8 @@ type Messages struct {
 	TrayLocalTerminal string
 	TrayShowWindow    string
 	TrayCheckUpdates  string
+	TrayLockApp       string
+	TrayServersFmt    string
 	TrayTooltipFmt    string
 	TrayTooltipEmpty  string
 	// TrayHintTitle and TrayHintBody are the notification shown the first time

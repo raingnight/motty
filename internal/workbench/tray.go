@@ -248,6 +248,12 @@ func (tray *Tray) Menu() []app.MenuItem {
 	if workspaces := tray.workspaceItems(member); len(workspaces) > 0 {
 		items = append(items, app.MenuItem{ID: "workspaces", Title: messages.NavWorkspaces, Submenu: workspaces})
 	}
+	if stats, ok := tray.serverStats(member); ok {
+		items = append(items, app.MenuItem{ID: "server-stats", Title: stats, Disabled: true})
+	}
+	if member.state.appLockEnabled() {
+		items = append(items, app.MenuItem{ID: "lock-app", Title: messages.TrayLockApp, OnSelect: func() { tray.lockApp(member) }})
+	}
 	return append(items,
 		app.MenuItem{Separator: true},
 		app.MenuItem{ID: "new-local-terminal", Title: messages.TrayLocalTerminal, OnSelect: tray.openLocalTerminal},
@@ -256,6 +262,35 @@ func (tray *Tray) Menu() []app.MenuItem {
 		app.MenuItem{Separator: true},
 		app.MenuItem{ID: "quit", Title: productText(messages.TrayQuit), OnSelect: tray.quit},
 	)
+}
+
+// serverStats is the servers overview's cached health line for the tray:
+// online, offline and abnormal counts. It reports nothing when the
+// servers page was never opened — the cache's healthAt is still zero —
+// or when no servers are known, so the menu never shows a stale zero.
+func (tray *Tray) serverStats(member trayMember) (string, bool) {
+	state := member.state
+	stats := state.servers.stats
+	if state.servers.healthAt.IsZero() || stats.Total == 0 {
+		return "", false
+	}
+	return fmt.Sprintf(state.messages.TrayServersFmt, stats.Online, stats.Offline, stats.Abnormal), true
+}
+
+// lockApp locks the application from the tray. A tray callback may run
+// off the window thread, so the lock is posted there when the window has
+// a Post; without one (a headless test) it locks directly, as the other
+// tray callbacks do.
+func (tray *Tray) lockApp(member trayMember) {
+	state := member.state
+	if !state.appLockEnabled() || state.appLocked() {
+		return
+	}
+	if state.post != nil {
+		state.post(func() { state.lockApplication() })
+		return
+	}
+	state.lockApplication()
 }
 
 // hostItems lists the saved hosts of a window under their groups: the hosts

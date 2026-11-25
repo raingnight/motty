@@ -31,6 +31,11 @@ import (
 
 var (
 	hitHosts                   = tree.ID(shellHits, "hosts")
+	hitServers                 = tree.ID(shellHits, "servers")
+	hitServersHome             = tree.ID(shellHits, "servers-home")
+	hitServerAlerts            = tree.ID(shellHits, "server-alerts")
+	hitServersBatch            = tree.ID(shellHits, "servers-batch")
+	hitServersSFTP             = tree.ID(shellHits, "servers-sftp")
 	hitHostListBar             = tree.ID(shellHits, "host-list-bar")
 	hitWorkspaces              = tree.ID(shellHits, "workspaces")
 	hitKeychain                = tree.ID(shellHits, "keychain")
@@ -429,6 +434,22 @@ const (
 	// sectionWorkspaces is the saved-workspace library. It follows the existing
 	// section values so adding it does not renumber them.
 	sectionWorkspaces
+	// sectionServers is the managed-servers page (phase 2). It follows the
+	// existing section values so adding it does not renumber them.
+	sectionServers
+	// sectionServersHome is the servers overview page (phase 4). It follows
+	// the existing section values so adding it does not renumber them.
+	sectionServersHome
+	// sectionServerAlerts is the alert center page (phase 4). It follows the
+	// existing section values so adding it does not renumber them.
+	sectionServerAlerts
+	// sectionServersBatch is the batch operations page (phase 5). It follows
+	// the existing section values so adding it does not renumber them.
+	sectionServersBatch
+	// sectionServersSFTP is the SFTP file management page (phase 5). It
+	// follows the existing section values so adding it does not renumber
+	// them.
+	sectionServersSFTP
 )
 
 // State owns the complete interactive state of the window.
@@ -665,6 +686,9 @@ type State struct {
 	sessionImport     sessionImportPreview
 	mobaEncoding      mobaEncodingPrompt
 	knownHosts        knownHostsView
+	// servers is the managed-servers page (phase 2): its list, filters and
+	// dialogs. See servers_state.go.
+	servers serversState
 	// selectedWorkspaceTemplateID is the template the library will apply next.
 	// It is view state only and is not persisted.
 	selectedWorkspaceTemplateID   string
@@ -842,6 +866,17 @@ type State struct {
 	updateStarted bool
 	loginOn       bool
 	closeAction   closeAction
+	// appLockIdleMinutes is the idle auto-lock timeout in minutes, 0 for
+	// never; a fresh window starts at the default until the saved state
+	// is read.
+	appLockIdleMinutes int
+	// lastActivity is the last keyboard or pointer activity, as Unix
+	// nanoseconds; the idle lock reads it, Pointer and Key write it.
+	lastActivity atomic.Int64
+	// idleWakeStop cancels the delayed wake that re-checks the idle
+	// lock; idleCheckInterval overrides its one-minute delay in tests.
+	idleWakeStop      func()
+	idleCheckInterval time.Duration
 	// keepWindows is what quitting does with this window's record for the next
 	// launch: keep it, discard it, or ask first.
 	keepWindows keepWindowsPolicy
@@ -1194,6 +1229,12 @@ func (state *State) Close() {
 	state.closeRemoteContainerDetails()
 	state.remote.serial++
 	state.closeDashboard()
+	// The servers page holds no closable resource of its own: its config-store
+	// handle is the process-shared OpenShared registry entry (see
+	// servers_state.go), so Close deliberately does not close it here — the
+	// window's own state.config.Close() below releases the shared store when
+	// its last holder lets go.
+	state.closeServers()
 	state.closeFontPickerPage()
 	state.flushTerminalDirectories()
 	state.closeRemoteToolsWindows()
@@ -1221,6 +1262,7 @@ func (state *State) Close() {
 	// The window's save above already carried any applied font size, so a wheel
 	// save still waiting is dropped rather than fired after the store closes.
 	state.stopTerminalZoomSave()
+	state.stopIdleLockWake()
 	state.closeAI()
 	state.closeHistory()
 	state.stopSyncTimer()
@@ -1257,6 +1299,18 @@ func (state *State) Close() {
 	state.closeForwardTunnels()
 	if p := state.appProtection; p != nil && (state.appLockEnabled() || p.busy) && len(state.profileWindows()) == 0 {
 		state.sealProfile()
+	}
+	// Exit cleanup: forget the vault's data key in memory, but only when
+	// this is the last live window of the profile — the vault is shared
+	// (OpenShared), so sealing while a sibling window still runs would
+	// lock its credentials out from under it. Nothing else seals it on
+	// exit: no earlier cleanup path called vault.Seal. Locking itself
+	// must not seal: background collection still needs the in-memory
+	// key while locked.
+	if len(state.profileWindows()) == 0 {
+		if v := state.secrets.vault; v != nil && v.PasswordProtected() {
+			v.Seal()
+		}
 	}
 	memoryTrim.request()
 }
@@ -1323,6 +1377,8 @@ func New(options Options) *State {
 	state.setAppearance(appearanceDark)
 	state.recompileHighlights()
 	state.attachProtection()
+	state.appLockIdleMinutes = defaultAppLockIdleMinutes
+	state.lastActivity.Store(time.Now().UnixNano())
 	if state.appLocked() {
 		state.profileDeferred = true
 		prefs, _ := configstore.ReadLocal(context.Background(), state.options.StatePath, configFormat, localKey)
@@ -1568,6 +1624,12 @@ func (state *State) EditorFor(hit gfx.ID) *text.Editor {
 		}
 		if hit == hitKnownHostsSearch && state.activeSection == sectionKnownHosts && state.knownHosts.action == knownHostsActionNone {
 			return &state.knownHosts.search
+		}
+		if hit == hitServersSearch && state.activeSection == sectionServers && !state.servers.anyDialogOpen() {
+			return &state.servers.search
+		}
+		if editor := state.serversEditorFor(hit); editor != nil {
+			return editor
 		}
 		if hit == hitSessionLogsSearch && state.activeSection == sectionSessionLogs {
 			return &state.sessionLogs.view.search
@@ -2138,6 +2200,41 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		state.clearBroadcast()
 		state.activeSection = sectionHosts
 		state.save()
+	case id == hitServers:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.openServers()
+		state.save()
+	case id == hitServersHome:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.openServersHome()
+		state.save()
+	case id == hitServerAlerts:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.openServerAlerts()
+		state.save()
+	case id == hitServersBatch:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.openServersBatch()
+		state.save()
+	case id == hitServersSFTP:
+		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
+			state.releaseIdleSFTP(session)
+		}
+		state.clearBroadcast()
+		state.openServersSFTP()
+		state.save()
 	case id == hitWorkspaces:
 		if session, ok := state.sessionByIDPointer(state.activeSessionID); ok {
 			state.releaseIdleSFTP(session)
@@ -2267,6 +2364,8 @@ func (state *State) click(id gfx.ID, feedback bool) {
 		}
 	case tree.Within(id.Scope(), knownHostsHits):
 		state.clickKnownHosts(id)
+	case tree.Within(id.Scope(), serversHits):
+		state.clickServers(id)
 	case id.Scope() == hitShortcutRowList:
 		state.openShortcutCapture(shortcutAction(uint32(item(id))) + 1)
 	case tree.Within(id.Scope(), proxiesHits):
@@ -2704,6 +2803,7 @@ func (state *State) hostForRow(id gfx.ID) (Host, bool) {
 // Pointer handles the pointer events the runtime does not turn into clicks. A
 // double click on a host row connects to it.
 func (state *State) Pointer(event gfx.PointerEvent) (outcome gfx.EventResult) {
+	state.noteActivity()
 	if state.modal == modalAppLock && !state.appAccessBlocked() {
 		if appLockOwns(event.Target) {
 			return gfx.EventResult{}
@@ -3097,6 +3197,7 @@ func fieldForDialogHit(id gfx.ID) hostField {
 
 // Key provides roving keyboard focus for terminal tabs.
 func (state *State) Key(event gfx.KeyEvent) (outcome gfx.EventResult) {
+	state.noteActivity()
 	if result := state.appLockShortcut(event, nil); result.Handled {
 		return result
 	}
@@ -3327,6 +3428,9 @@ func (state *State) key(event gfx.KeyEvent) gfx.EventResult {
 		return result
 	}
 	if result, handled := state.knownHostsKey(event); handled {
+		return result
+	}
+	if result, handled := state.serversKey(event); handled {
 		return result
 	}
 	if result, handled := state.sessionLogsKey(event); handled {

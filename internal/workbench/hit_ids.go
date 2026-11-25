@@ -31,6 +31,7 @@ var (
 	settingsHits   = tree.Feature("settings")
 	proxiesHits    = tree.Feature("proxies")
 	knownHostsHits = tree.Feature("known-hosts")
+	serversHits    = tree.Feature("servers")
 	sftpHits       = tree.Feature("sftp")
 	vaultHits      = tree.Feature("vault")
 

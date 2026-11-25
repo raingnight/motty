@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -26,13 +27,67 @@ var (
 	errLockCorrupt          = errors.New("invalid application lock settings")
 	errLockPasswordTooShort = errors.New("application lock password is too short")
 	errLockPasswordTooLong  = errors.New("application lock password is too long")
+	// errAppLockLockedOut reports a password check refused while the
+	// failure lockout is still running. It says nothing about whether
+	// the password was right: the check never runs while locked out.
+	errAppLockLockedOut = errors.New("application lock is temporarily locked out after too many incorrect passwords")
 )
+
+// lockoutThreshold is how many consecutive wrong passwords lock the
+// application out; lockoutDurations is the lockout for the 1st, 2nd,
+// 3rd and 4th lockout, with the last value capping every later one.
+const lockoutThreshold = 5
+
+var lockoutDurations = [...]time.Duration{
+	time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour,
+}
+
+// lockoutDurationFor is the lockout of the nth lockout (1-based): the
+// first is a minute, then 5, 15 and 30 minutes, then an hour at most.
+func lockoutDurationFor(lockCount int) time.Duration {
+	if lockCount <= 1 {
+		return lockoutDurations[0]
+	}
+	if lockCount > len(lockoutDurations) {
+		return lockoutDurations[len(lockoutDurations)-1]
+	}
+	return lockoutDurations[lockCount-1]
+}
 
 type lockVerifier struct {
 	Version  int    `json:"version"`
 	Salt     []byte `json:"salt"`
 	Hash     []byte `json:"hash"`
 	SystemID string `json:"system_id,omitempty"`
+	// FailedAttempts counts consecutive wrong passwords since the last
+	// success; LockCount counts lockouts since the last success;
+	// LockedUntilUnix is the lockout's end as a Unix timestamp, 0 when
+	// no lockout is running. All three are zero in a file written
+	// before they existed, which reads as "never failed".
+	FailedAttempts  int   `json:"failed_attempts,omitempty"`
+	LockCount       int   `json:"lock_count,omitempty"`
+	LockedUntilUnix int64 `json:"locked_until_unix,omitempty"`
+	// VaultLinked says the vault is protected with this application
+	// lock password (wrapped or unlocked by an app-lock action), as
+	// opposed to a legacy file still kept by its old master password.
+	// The vault API cannot tell the two apart — both carry a KDF — so
+	// this flag is what keeps the legacy conversion prompt
+	// (showNextPrompt) from firing for a vault the app lock already
+	// owns. False in a file written before it existed: legacy until
+	// proven otherwise.
+	VaultLinked bool `json:"vault_linked,omitempty"`
+}
+
+// lockoutRemaining is how long the lockout still has to run, or 0 when
+// none is running.
+func (r lockVerifier) lockoutRemaining(now time.Time) time.Duration {
+	if r.LockedUntilUnix == 0 {
+		return 0
+	}
+	if remaining := time.Unix(r.LockedUntilUnix, 0).Sub(now); remaining > 0 {
+		return remaining
+	}
+	return 0
 }
 
 func readLockVerifier(path string) (lockVerifier, error) {

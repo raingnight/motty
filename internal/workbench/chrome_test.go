@@ -154,10 +154,19 @@ func TestChromeHasOnlyTheControlsThatDoSomething(t *testing.T) {
 
 	// "Session Logs" is a real page now, so its sidebar row is expected; a
 	// substring check for "Logs" would fail on it, which is why it is gone from
-	// this list of controls nothing answers to.
-	for _, gone := range []string{"Vaults", "SFTP", "Scripts"} {
+	// this list of controls nothing answers to. The same holds for the server
+	// pages: "Overview", "Servers", "Batch Ops", "SFTP Files" and "Alerts" are
+	// real pages, so their sidebar rows are expected hits below — and "SFTP
+	// Files" contains "SFTP", which is why that entry is checked by exact
+	// label, not substring.
+	for _, gone := range []string{"Vaults", "Scripts"} {
 		if contains(texts, gone) {
 			t.Errorf("%q is still painted", gone)
+		}
+	}
+	for _, text := range texts {
+		if text == "SFTP" {
+			t.Errorf("%q is still painted", "SFTP")
 		}
 	}
 	// Every painted hit is one the state handles; none is a decoration waiting
@@ -167,6 +176,9 @@ func TestChromeHasOnlyTheControlsThatDoSomething(t *testing.T) {
 		hitKnownHosts: true, hitSnippets: true, hitNotes: true, hitSettings: true, hitWindowSettings: true, hitWindowLocalTerminal: true, hitSearch: true, hitConnect: true,
 		hitAddHost: true, hitHostFilterAll: true, hitImportMenu: true, hitTheme: true, hitHome: true, hitNewTab: true,
 		hitGitHub: true,
+		// The server pages (phases 2–6) are real pages with handlers, so their
+		// sidebar rows belong here like the other pages' rows.
+		hitServersHome: true, hitServers: true, hitServersBatch: true, hitServersSFTP: true, hitServerAlerts: true,
 	}
 	// A development build also declares the component gallery.
 	for _, id := range devOnlyShellHits() {

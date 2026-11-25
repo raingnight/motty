@@ -653,6 +653,7 @@ var (
 	settingsTabOrientationChoices  = [...]tabOrientation{tabsHorizontal, tabsVertical}
 	settingsTabDoubleClickChoices  = [...]tabDoubleClickAction{tabDoubleClickRename, tabDoubleClickDuplicate, tabDoubleClickNone}
 	settingsCloseChoices           = [...]closeAction{closeToTray, closeQuits}
+	settingsAppLockIdleChoices     = appLockIdleChoices
 	settingsKeepWindowsChoices     = [...]keepWindowsPolicy{keepWindowsAlways, keepWindowsNever, keepWindowsAsk}
 	settingsRelaunchChoices        = [...]relaunchAction{relaunchRaise, relaunchNewWindow}
 	settingsUpdateSourceChoices    = [...]update.Source{update.SourceOfficial, update.SourceCNB}
@@ -722,6 +723,15 @@ func (state *State) settingsCloseLabel(action closeAction) string {
 		return state.messages.Tools.GeneralCloseQuit
 	}
 	return state.messages.Tools.GeneralCloseTray
+}
+
+// settingsAppLockIdleLabel names an idle auto-lock timeout for its choice
+// row: minutes, or "never" for 0.
+func (state *State) settingsAppLockIdleLabel(minutes int) string {
+	if minutes == 0 {
+		return state.messages.AppLock.IdleNever
+	}
+	return fmt.Sprintf(state.messages.AppLock.IdleMinutesFmt, minutes)
 }
 
 func (state *State) settingsKeepWindowsLabel(policy keepWindowsPolicy) string {

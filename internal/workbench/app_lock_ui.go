@@ -16,28 +16,35 @@ import (
 var appLockHits = tree.Feature("app-lock")
 
 var (
-	hitAppLock             = tree.ID(appLockHits, "lock")
-	hitAppLockPassword     = tree.ID(appLockHits, "password")
-	hitAppLockSubmit       = tree.ID(appLockHits, "submit")
-	hitAppLockSystem       = tree.ID(appLockHits, "system")
-	hitAppLockEnable       = tree.ID(appLockHits, "enable")
-	hitAppLockToggle       = tree.ID(appLockHits, "protection-toggle")
-	hitAppLockChange       = tree.ID(appLockHits, "change")
-	hitAppLockDisable      = tree.ID(appLockHits, "disable")
-	hitAppLockSystemToggle = tree.ID(appLockHits, "system-toggle")
-	hitAppLockFormClose    = tree.ID(appLockHits, "form-close")
-	hitAppLockFormDismiss  = tree.ID(appLockHits, "form-dismiss")
-	hitAppLockFormSubmit   = tree.ID(appLockHits, "form-submit")
-	hitAppLockFormFields   = tree.Sub(appLockHits, tree.Name("form-fields"))
+	hitAppLock              = tree.ID(appLockHits, "lock")
+	hitAppLockPassword      = tree.ID(appLockHits, "password")
+	hitAppLockSubmit        = tree.ID(appLockHits, "submit")
+	hitAppLockSystem        = tree.ID(appLockHits, "system")
+	hitAppLockEnable        = tree.ID(appLockHits, "enable")
+	hitAppLockToggle        = tree.ID(appLockHits, "protection-toggle")
+	hitAppLockChange        = tree.ID(appLockHits, "change")
+	hitAppLockDisable       = tree.ID(appLockHits, "disable")
+	hitAppLockSystemToggle  = tree.ID(appLockHits, "system-toggle")
+	hitAppLockFormClose     = tree.ID(appLockHits, "form-close")
+	hitAppLockFormDismiss   = tree.ID(appLockHits, "form-dismiss")
+	hitAppLockFormSubmit    = tree.ID(appLockHits, "form-submit")
+	hitAppLockFormFields    = tree.Sub(appLockHits, tree.Name("form-fields"))
+	hitAppLockForgot        = tree.ID(appLockHits, "forgot")
+	hitAppLockForgotConfirm = tree.ID(appLockHits, "forgot-confirm")
+	hitAppLockForgotCancel  = tree.ID(appLockHits, "forgot-cancel")
 )
 
 type appLockUI struct {
-	systemFailed               bool
-	systemError                string
-	password                   text.Editor
-	field                      ui.Field
-	bound, shown, active       bool
-	error                      string
+	systemFailed         bool
+	systemError          string
+	password             text.Editor
+	field                ui.Field
+	bound, shown, active bool
+	error                string
+	// forgetConfirm is the lock screen's second step of the
+	// forgotten-password flow: the warning and its confirm/cancel
+	// buttons replace the "forgot password" entry until answered.
+	forgetConfirm              bool
 	logo                       ui.Box
 	formAction                 appLockAction
 	formFields                 [3]appLockFormField
@@ -173,6 +180,16 @@ func (state *State) declareAppLockPage(c ui.C) {
 			}
 			if u.error != "" {
 				ui.Paragraph(c, u.error, 0).FontSize(metrics.FontSizeS).Color(pal.danger).LineHeight(18).MarginTop(12)
+			} else if lockedOut := state.appLockLockedOutText(); lockedOut != "" {
+				ui.Paragraph(c, lockedOut, 0).FontSize(metrics.FontSizeS).Color(pal.danger).LineHeight(18).MarginTop(12)
+			}
+			if u.forgetConfirm {
+				ui.Text(c, m.ForgotTitle).FontSize(metrics.FontSizeM).Weight(gfx.WeightMedium).Color(pal.text).LineHeight(20).MarginTop(20 * scale)
+				ui.Paragraph(c, m.ForgotDescription, 0).FontSize(metrics.FontSizeS).Color(pal.muted).LineHeight(18).MarginTop(8)
+				ui.Button(c, m.ForgotConfirm).Height(max(34, 44*scale)).FillWidth().MarginTop(16*scale).Disabled(busy).Hit(hitAppLockForgotConfirm, m.ForgotConfirm)
+				ui.Button(c, m.Cancel).Height(max(34, 44*scale)).FillWidth().MarginTop(8*scale).Disabled(busy).Outline().Hit(hitAppLockForgotCancel, m.Cancel)
+			} else {
+				ui.Button(c, m.ForgotPassword).Height(max(34, 44*scale)).FillWidth().MarginTop(16*scale).Disabled(busy).Outline().Hit(hitAppLockForgot, m.ForgotPassword)
 			}
 		})
 	})
@@ -264,6 +281,12 @@ func (state *State) clickAppLock(id gfx.ID) bool {
 			if state.appProtection.record.SystemID != "" {
 				state.startAppLockUIAction(appLockSystemUnlock, "", "")
 			}
+		case hitAppLockForgot:
+			u.forgetConfirm = true
+		case hitAppLockForgotConfirm:
+			state.forgetAppLockPassword()
+		case hitAppLockForgotCancel:
+			u.forgetConfirm = false
 		}
 		return true
 	}
@@ -322,7 +345,7 @@ func (state *State) startAppLockUIAction(action appLockAction, current, next str
 			u.active = false
 		} else {
 			u.password = text.Editor{}
-			u.shown, u.error = false, ""
+			u.shown, u.error, u.forgetConfirm = false, "", false
 			if state.modal == modalAppLock {
 				state.closeModal()
 			}
@@ -335,6 +358,13 @@ func (state *State) startAppLockUIAction(action appLockAction, current, next str
 func (state *State) appLockErrorText(err error) string {
 	m := state.messages.AppLock
 	switch {
+	case errors.Is(err, errAppLockLockedOut):
+		if text := state.appLockLockedOutText(); text != "" {
+			return text
+		}
+		return m.WrongPassword
+	case errors.Is(err, errAppLockVaultProtected):
+		return m.SystemVaultProtected
 	case errors.Is(err, errLockWrongPassword):
 		return m.WrongPassword
 	case errors.Is(err, errLockCorrupt):
@@ -470,6 +500,8 @@ func (state *State) paintAppLockSettings(page *settingsPage) {
 		page.lineFor(hitAppLockSystemToggle, m.SystemTitle, description, aiSwitchWidth, func() {
 			page.switchSlot(hitAppLockSystemToggle, registered, busy || !enabled || !registered && !state.appSystemAvailable(), m.SystemTitle)
 		})
+		settingsChoiceRow(page, m.IdleTitle, m.IdleDescription, &state.appLockIdleMinutes, appLockIdleChoices[:], state.settingsAppLockIdleLabel,
+			func() { state.noteActivity(); state.save() }, nil)
 		if message := state.lockUI.systemError; message != "" {
 			page.growRow().PadX(18).Children(func() {
 				state.problemLineC(page.c, message)

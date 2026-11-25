@@ -895,7 +895,24 @@ func (state *State) finishStartingConnection(session *Session, automatic bool) {
 // connection goroutine asked for, so Paint only ever reads state. It does
 // nothing for sessions whose status is unchanged and whose shell is quiet.
 func (state *State) Wake() {
+	// Sleep/wake (phase 3): resume the collection engine when it exists.
+	// Resume is a no-op while the engine is running and not paused; after
+	// a sleep it rebuilds the round context, reschedules every kind from
+	// now + its interval (never catching up on missed runs), and probes
+	// connectivity in the background. The engine is only started by
+	// opening the servers page, so a nil engine here means collection was
+	// never started and nothing resumes.
+	if engine := state.servers.engine; engine != nil {
+		engine.Resume()
+	}
+	// Sleep/wake (phase 4): a watcher that exists re-evaluates at once,
+	// so alerts raised while the machine slept surface without waiting
+	// for its next interval.
+	if watcher := state.servers.alertsWatcher; watcher != nil {
+		watcher.EvaluateNow()
+	}
 	state.drainAppLockResults()
+	state.armIdleLockWake()
 	if state.appAccessBlocked() {
 		// Keep connected programs moving while their screens are concealed. The
 		// regular pump bounds its backlog and suppresses interactive effects
@@ -1404,8 +1421,12 @@ func (state *State) showNextPrompt() {
 		return
 	}
 	// A vault still kept by the master password of an earlier version cannot
-	// answer anything until that password has been typed once.
-	if vaultFile := state.secrets.vault; vaultFile != nil && vaultFile.NeedsConversion() && !state.secrets.declined {
+	// answer anything until that password has been typed once. A vault the
+	// application lock already owns (VaultLinked) is not legacy: it opens
+	// with the application lock password, so the conversion dialog must
+	// not fire for it — typing that password into it would strip the
+	// protection via ConvertLegacy instead of unlocking it.
+	if vaultFile := state.secrets.vault; vaultFile != nil && vaultFile.NeedsConversion() && !state.secrets.declined && !state.vaultLinkedToAppLock() {
 		state.openVaultUnlock(nil, nil)
 		return
 	}

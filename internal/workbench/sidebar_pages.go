@@ -13,6 +13,7 @@ type navPage uint8
 
 const (
 	navPageHosts navPage = iota
+	navPageServers
 	navPageWorkspaces
 	navPageMonitor
 	navPageSessionLogs
@@ -22,6 +23,13 @@ const (
 	navPageKnownHosts
 	navPageSnippets
 	navPageNotes
+	// navPageServersHome and navPageServerAlerts are appended last so the
+	// earlier pages keep their values; the sidebar order below is what the
+	// user sees, not this declaration order.
+	navPageServersHome
+	navPageServerAlerts
+	navPageServersBatch
+	navPageServersSFTP
 	navPageCount
 )
 
@@ -50,6 +58,16 @@ func (page navPage) key() string {
 	switch page {
 	case navPageHosts:
 		return "hosts"
+	case navPageServers:
+		return "servers"
+	case navPageServersHome:
+		return "servers-home"
+	case navPageServerAlerts:
+		return "server-alerts"
+	case navPageServersBatch:
+		return "servers-batch"
+	case navPageServersSFTP:
+		return "servers-sftp"
 	case navPageWorkspaces:
 		return "workspaces"
 	case navPageMonitor:
@@ -122,6 +140,11 @@ type sidebarPage struct {
 // declared beside the local-terminal row at the bottom, and is always shown.
 var sidebarPages = [...]sidebarPage{
 	{navPageHosts, hitHosts, iconHosts, sectionHosts},
+	{navPageServersHome, hitServersHome, iconHome, sectionServersHome},
+	{navPageServers, hitServers, iconServers, sectionServers},
+	{navPageServersBatch, hitServersBatch, iconTerminal, sectionServersBatch},
+	{navPageServersSFTP, hitServersSFTP, iconFolderOpen, sectionServersSFTP},
+	{navPageServerAlerts, hitServerAlerts, iconAlert, sectionServerAlerts},
 	{navPageWorkspaces, hitWorkspaces, iconColumns2, sectionWorkspaces},
 	{navPageMonitor, hitDashboard, iconGauge, sectionDashboard},
 	{navPageSessionLogs, hitSessionLogs, iconFileClock, sectionSessionLogs},
@@ -139,6 +162,16 @@ func (state *State) navPageLabel(page navPage) string {
 	switch page {
 	case navPageHosts:
 		return m.NavHosts
+	case navPageServers:
+		return m.NavServers
+	case navPageServersHome:
+		return m.NavServersHome
+	case navPageServerAlerts:
+		return m.NavServerAlerts
+	case navPageServersBatch:
+		return m.NavServersBatch
+	case navPageServersSFTP:
+		return m.NavServersSFTP
 	case navPageWorkspaces:
 		return m.NavWorkspaces
 	case navPageMonitor:
